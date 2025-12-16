@@ -348,6 +348,17 @@ async fn update_from_session(
             message: format!("Failed to get session: {}", err),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         })?;
+
+    // Check for custom system prompt and apply if enabled
+    let config = Config::global();
+    if let Ok(true) = config.get_param::<bool>("GOOSE_CUSTOM_PROMPT_ENABLED") {
+        if let Ok(custom_prompt) = config.get_param::<String>("GOOSE_CUSTOM_SYSTEM_PROMPT") {
+            if !custom_prompt.is_empty() {
+                agent.override_system_prompt(custom_prompt).await;
+            }
+        }
+    }
+
     let context: HashMap<&str, Value> = HashMap::new();
     let desktop_prompt =
         render_global_file("desktop_prompt.md", &context).expect("Prompt should render");

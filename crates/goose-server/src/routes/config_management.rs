@@ -142,6 +142,33 @@ pub struct DetectProviderResponse {
     pub provider_name: String,
     pub models: Vec<String>,
 }
+
+// System Prompt related structures
+#[derive(Deserialize, ToSchema)]
+pub struct SetCustomPromptRequest {
+    pub content: String,
+    pub enabled: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PromptResponse {
+    pub content: String,
+    pub is_custom: bool,
+    pub is_enabled: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PromptTemplate {
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub content: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DefaultPromptsResponse {
+    pub prompts: Vec<PromptTemplate>,
+}
 #[utoipa::path(
     post,
     path = "/config/upsert",
@@ -823,6 +850,146 @@ pub async fn update_custom_provider(
     Ok(Json(format!("Updated custom provider: {}", id)))
 }
 
+// System Prompt API endpoints
+const GOOSE_CUSTOM_SYSTEM_PROMPT: &str = "GOOSE_CUSTOM_SYSTEM_PROMPT";
+const GOOSE_CUSTOM_PROMPT_ENABLED: &str = "GOOSE_CUSTOM_PROMPT_ENABLED";
+
+#[utoipa::path(
+    get,
+    path = "/config/prompts/system",
+    responses(
+        (status = 200, description = "Current system prompt retrieved successfully", body = PromptResponse),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn get_system_prompt() -> Result<Json<PromptResponse>, StatusCode> {
+    let config = Config::global();
+
+    // Check if custom prompt is enabled
+    let is_enabled = config
+        .get_param::<bool>(GOOSE_CUSTOM_PROMPT_ENABLED)
+        .unwrap_or(false);
+
+    // Try to get custom prompt
+    let custom_prompt = config
+        .get_param::<String>(GOOSE_CUSTOM_SYSTEM_PROMPT)
+        .ok();
+
+    let (content, is_custom) = if is_enabled && custom_prompt.is_some() {
+        (custom_prompt.unwrap(), true)
+    } else {
+        // Return default system prompt
+        let default_content = goose::prompt_template::get_template_content("system.md")
+            .unwrap_or_else(|_| "Default system prompt not available".to_string());
+        (default_content, false)
+    };
+
+    Ok(Json(PromptResponse {
+        content,
+        is_custom,
+        is_enabled,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/prompts/system",
+    request_body = SetCustomPromptRequest,
+    responses(
+        (status = 200, description = "Custom system prompt set successfully", body = String),
+        (status = 400, description = "Invalid request"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn set_system_prompt(
+    Json(request): Json<SetCustomPromptRequest>,
+) -> Result<Json<String>, StatusCode> {
+    let config = Config::global();
+
+    // Validate content length (max 50000 characters)
+    if request.content.len() > 50000 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Save the custom prompt content
+    config
+        .set_param(GOOSE_CUSTOM_SYSTEM_PROMPT, &request.content)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Save the enabled state
+    config
+        .set_param(GOOSE_CUSTOM_PROMPT_ENABLED, request.enabled)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json("Custom system prompt saved successfully".to_string()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/prompts/system/reset",
+    responses(
+        (status = 200, description = "System prompt reset to default", body = String),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn reset_system_prompt() -> Result<Json<String>, StatusCode> {
+    let config = Config::global();
+
+    // Disable custom prompt
+    config
+        .set_param(GOOSE_CUSTOM_PROMPT_ENABLED, false)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Optionally delete the custom prompt content
+    let _ = config.delete(GOOSE_CUSTOM_SYSTEM_PROMPT);
+
+    Ok(Json("System prompt reset to default".to_string()))
+}
+
+#[utoipa::path(
+    get,
+    path = "/config/prompts/defaults",
+    responses(
+        (status = 200, description = "Default prompt templates retrieved successfully", body = DefaultPromptsResponse),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub async fn get_default_prompts() -> Result<Json<DefaultPromptsResponse>, StatusCode> {
+    let mut prompts = Vec::new();
+
+    // Add default system prompt
+    if let Ok(content) = goose::prompt_template::get_template_content("system.md") {
+        prompts.push(PromptTemplate {
+            name: "system.md".to_string(),
+            display_name: "Default System Prompt".to_string(),
+            description: "The standard system prompt for Goose agent".to_string(),
+            content,
+        });
+    }
+
+    // Add plan prompt
+    if let Ok(content) = goose::prompt_template::get_template_content("plan.md") {
+        prompts.push(PromptTemplate {
+            name: "plan.md".to_string(),
+            display_name: "Planning Prompt".to_string(),
+            description: "Prompt template for planning tasks".to_string(),
+            content,
+        });
+    }
+
+    // Add GPT-4.1 specific prompt if available
+    if let Ok(content) = goose::prompt_template::get_template_content("system_gpt_4.1.md") {
+        prompts.push(PromptTemplate {
+            name: "system_gpt_4.1.md".to_string(),
+            display_name: "GPT-4.1 System Prompt".to_string(),
+            description: "Detailed system prompt optimized for GPT-4.1".to_string(),
+            content,
+        });
+    }
+
+    Ok(Json(DefaultPromptsResponse { prompts }))
+}
+
 #[utoipa::path(
     post,
     path = "/config/check_provider",
@@ -886,6 +1053,11 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/custom-providers/{id}", get(get_custom_provider))
         .route("/config/check_provider", post(check_provider))
         .route("/config/set_provider", post(set_config_provider))
+        // System Prompt routes
+        .route("/config/prompts/system", get(get_system_prompt))
+        .route("/config/prompts/system", post(set_system_prompt))
+        .route("/config/prompts/system/reset", post(reset_system_prompt))
+        .route("/config/prompts/defaults", get(get_default_prompts))
         .with_state(state)
 }
 

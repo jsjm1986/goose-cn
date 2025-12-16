@@ -100,6 +100,26 @@ pub fn render_inline_once<T: Serialize>(
     Ok(rendered.trim().to_string())
 }
 
+/// Gets the raw content of a template file from the embedded CORE_PROMPTS_DIR.
+///
+/// # Arguments
+/// * `template_name` - The name of the template file (e.g., "system.md").
+///
+/// # Returns
+/// The raw template content as a string, or an error if the template is not found.
+pub fn get_template_content(template_name: &str) -> Result<String, MiniJinjaError> {
+    // Look up the file in the embedded directory
+    if let Some(file) = CORE_PROMPTS_DIR.get_file(template_name) {
+        let content = String::from_utf8_lossy(file.contents()).to_string();
+        Ok(content)
+    } else {
+        Err(MiniJinjaError::new(
+            minijinja::ErrorKind::TemplateNotFound,
+            format!("Template '{}' not found in embedded prompts directory", template_name),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
